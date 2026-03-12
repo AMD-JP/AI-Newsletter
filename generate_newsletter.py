@@ -1,20 +1,13 @@
 """
 Ford Raptor Price Trend Report Generator
-========================================
+---------------------------------------
 
-Uses the AMD LLM Gateway to generate a weekly report tracking
-price trends for Ford F-150 Raptor trucks over time.
+Generates a weekly PDF report analyzing Ford F-150 Raptor price trends.
 
-The report analyzes:
-    - New vehicle MSRP changes
-    - Used market price trends
-    - Regional demand differences
-    - Competitor trucks (TRX, ZR2, etc.)
+Uses AMD LLM Gateway for analysis and publishes the PDF to GitHub.
 
-Outputs a PDF saved to /reports and pushes to GitHub.
-
-Requirements:
-    pip install openai==1.101.0 gitpython reportlab python-dotenv
+Requirements
+pip install openai==1.101.0 gitpython reportlab python-dotenv
 """
 
 import os
@@ -27,16 +20,16 @@ from pathlib import Path
 import openai
 import git
 from dotenv import load_dotenv
+
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
-    Table, TableStyle, PageBreak
+    Table, TableStyle
 )
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
-
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -44,21 +37,19 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 
-_env_path = _SCRIPT_DIR / ".env"
-if _env_path.exists():
-    with open(_env_path, "r", encoding="utf-8") as f:
+_env = _SCRIPT_DIR / ".env"
+
+if _env.exists():
+    with open(_env) as f:
         for line in f:
             if "=" in line:
                 k, v = line.strip().split("=", 1)
                 os.environ.setdefault(k, v)
 else:
-    load_dotenv(dotenv_path=_env_path)
+    load_dotenv(dotenv_path=_env)
 
 API_KEY = os.environ.get("PROJECT_API_KEY", "")
-REPO_PATH = os.environ.get("REPO_PATH", "")
-
-if not REPO_PATH:
-    REPO_PATH = str(_SCRIPT_DIR)
+REPO_PATH = os.environ.get("REPO_PATH", str(_SCRIPT_DIR))
 
 OUTPUT_DIR = Path(REPO_PATH) / "reports"
 
@@ -72,21 +63,18 @@ TEMPERATURE = 0.4
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------
 # COLORS
 # ---------------------------------------------------------------------
 
 FORD_BLUE = colors.HexColor("#003478")
-DARK = colors.HexColor("#1A1A1A")
-LIGHT = colors.HexColor("#F5F5F5")
 GREY = colors.HexColor("#666666")
 BORDER = colors.HexColor("#DDDDDD")
-
 
 # ---------------------------------------------------------------------
 # LLM CLIENT (UNCHANGED)
 # ---------------------------------------------------------------------
+
 
 def make_client():
     return openai.OpenAI(
@@ -98,14 +86,30 @@ def make_client():
         },
     )
 
+# ---------------------------------------------------------------------
+# TEXT CLEANING
+# ---------------------------------------------------------------------
 
-# ---------------------------------------------------------------------
-# TEXT CLEANER
-# ---------------------------------------------------------------------
 
 def clean_text(text: str):
-    text = re.sub(r"[#*`]+", "", text)
+    """Sanitize LLM output for ReportLab."""
+
+    if not text:
+        return ""
+
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"[#*`]", "", text)
+
+    text = text.replace("\u2014", "-")
+    text = text.replace("\u2013", "-")
+    text = text.replace("\u2018", "'")
+    text = text.replace("\u2019", "'")
+    text = text.replace("\u201c", '"')
+    text = text.replace("\u201d", '"')
+
     text = text.encode("ascii", "replace").decode("ascii")
+
     return text.strip()
 
 
@@ -113,13 +117,14 @@ def clean_text(text: str):
 # LLM CALL
 # ---------------------------------------------------------------------
 
-def call_llm(client, prompt, name):
 
-    log.info("Generating %s", name)
+def call_llm(client, prompt, section):
+
+    log.info("Generating %s", section)
 
     system = (
-        "You are an automotive market analyst specializing in pickup truck pricing "
-        "and used vehicle market trends."
+        "You are an automotive market analyst specializing in "
+        "truck pricing and vehicle resale trends."
     )
 
     response = client.chat.completions.create(
@@ -133,44 +138,45 @@ def call_llm(client, prompt, name):
     )
 
     content = response.choices[0].message.content
+
     return clean_text(content)
 
 
 # ---------------------------------------------------------------------
-# CONTENT GENERATION
+# REPORT CONTENT
 # ---------------------------------------------------------------------
+
 
 def generate_content(client, date):
 
     sections = {}
 
     sections["summary"] = call_llm(client, f"""
-Write a short executive summary for a Ford Raptor Price Report dated {date}.
-Summarize the overall direction of Ford Raptor prices in both new and used markets.
+Write a short executive summary for a Ford Raptor price report dated {date}.
+Explain whether prices are trending up or down.
 """, "Summary")
 
-    sections["historical"] = call_llm(client, f"""
-Write an analysis of Ford F-150 Raptor pricing trends from 2017 through 2025.
-Discuss MSRP changes across generations and how resale values have changed.
+    sections["history"] = call_llm(client, f"""
+Explain Ford Raptor MSRP changes from 2017 to 2025 and resale trends.
 """, "Historical Prices")
 
-    sections["used_market"] = call_llm(client, f"""
-Write a section analyzing used Ford Raptor price trends in the U.S.
-Discuss supply levels, dealer markups, and depreciation curves.
+    sections["used"] = call_llm(client, f"""
+Analyze used Ford Raptor prices across the U.S.
+Explain depreciation and dealer markups.
 """, "Used Market")
 
     sections["regional"] = call_llm(client, f"""
-Explain regional price differences for Ford Raptors in the United States.
-Focus on Texas, California, and Midwest markets.
-""", "Regional Demand")
+Explain regional Raptor pricing differences focusing on Texas,
+California and Midwest markets.
+""", "Regional Markets")
 
     sections["competition"] = call_llm(client, f"""
-Analyze how competitor trucks influence Raptor prices including:
-Ram TRX, Chevy Silverado ZR2, and Toyota TRD Pro trucks.
+Explain how competitor trucks influence Raptor prices including
+Ram TRX, Silverado ZR2, and Toyota TRD Pro.
 """, "Competition")
 
     sections["outlook"] = call_llm(client, f"""
-Write a forward-looking outlook for Ford Raptor pricing over the next 12 months.
+Give a short forecast for Ford Raptor pricing over the next 12 months.
 """, "Outlook")
 
     return sections
@@ -180,7 +186,8 @@ Write a forward-looking outlook for Ford Raptor pricing over the next 12 months.
 # PDF STYLES
 # ---------------------------------------------------------------------
 
-def styles():
+
+def build_styles():
 
     return {
 
@@ -221,9 +228,15 @@ def styles():
 # PDF BUILDER
 # ---------------------------------------------------------------------
 
+
+def split_paragraphs(text):
+
+    return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
 def build_pdf(sections, output, date):
 
-    s = styles()
+    styles = build_styles()
 
     doc = SimpleDocTemplate(
         str(output),
@@ -241,42 +254,44 @@ def build_pdf(sections, output, date):
     width = letter[0] - 1.5 * inch
 
     masthead = Table([
-        [Paragraph("FORD RAPTOR", s["title"])],
-        [Paragraph("PRICE TREND REPORT", s["title"])],
-        [Paragraph(date, s["footer"])]
+        [Paragraph("FORD RAPTOR", styles["title"])],
+        [Paragraph("PRICE TREND REPORT", styles["title"])],
+        [Paragraph(date, styles["footer"])]
     ], colWidths=[width])
 
     masthead.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), FORD_BLUE),
-        ("TOPPADDING",(0,0),(-1,-1),16),
-        ("BOTTOMPADDING",(0,0),(-1,-1),16)
+        ("BACKGROUND", (0, 0), (-1, -1), FORD_BLUE),
+        ("TOPPADDING", (0, 0), (-1, -1), 16),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 16),
     ]))
 
     story.append(masthead)
-    story.append(Spacer(1,12))
+    story.append(Spacer(1, 12))
 
-    for title,key in [
-        ("EXECUTIVE SUMMARY","summary"),
-        ("HISTORICAL PRICE TRENDS","historical"),
-        ("USED MARKET ANALYSIS","used_market"),
-        ("REGIONAL MARKET DIFFERENCES","regional"),
-        ("COMPETITOR IMPACT","competition"),
-        ("PRICE OUTLOOK","outlook")
-    ]:
+    section_order = [
+        ("EXECUTIVE SUMMARY", "summary"),
+        ("HISTORICAL PRICE TRENDS", "history"),
+        ("USED MARKET ANALYSIS", "used"),
+        ("REGIONAL MARKET DIFFERENCES", "regional"),
+        ("COMPETITOR IMPACT", "competition"),
+        ("PRICE OUTLOOK", "outlook"),
+    ]
 
-        story.append(Paragraph(title, s["section"]))
+    for title, key in section_order:
+
+        story.append(Paragraph(title, styles["section"]))
         story.append(HRFlowable(width=width, thickness=1, color=FORD_BLUE))
 
-        for p in sections[key].split("\n"):
-            story.append(Paragraph(p.strip(), s["body"]))
+        for p in split_paragraphs(sections[key]):
+            story.append(Paragraph(p, styles["body"]))
 
-        story.append(Spacer(1,12))
+        story.append(Spacer(1, 12))
 
     story.append(HRFlowable(width=width, thickness=0.5, color=BORDER))
 
     story.append(Paragraph(
         f"Ford Raptor Price Report | Generated {date}",
-        s["footer"]
+        styles["footer"]
     ))
 
     doc.build(story)
@@ -285,6 +300,7 @@ def build_pdf(sections, output, date):
 # ---------------------------------------------------------------------
 # GIT PUSH
 # ---------------------------------------------------------------------
+
 
 def commit_and_push(file):
 
@@ -302,6 +318,7 @@ def commit_and_push(file):
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
+
 
 def main():
 
