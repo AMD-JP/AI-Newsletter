@@ -1,13 +1,5 @@
 """
 Ford Raptor Price Trend Report Generator
----------------------------------------
-
-Generates a weekly PDF report analyzing Ford F-150 Raptor price trends.
-
-Uses AMD LLM Gateway for analysis and publishes the PDF to GitHub.
-
-Requirements
-pip install openai==1.101.0 gitpython reportlab python-dotenv
 """
 
 import os
@@ -16,6 +8,7 @@ import sys
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import openai
 import git
@@ -30,6 +23,7 @@ from reportlab.platypus import (
     Table, TableStyle
 )
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+
 
 # ---------------------------------------------------------------------
 # CONFIG
@@ -63,6 +57,7 @@ TEMPERATURE = 0.4
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------
 # COLORS
 # ---------------------------------------------------------------------
@@ -71,10 +66,10 @@ FORD_BLUE = colors.HexColor("#003478")
 GREY = colors.HexColor("#666666")
 BORDER = colors.HexColor("#DDDDDD")
 
-# ---------------------------------------------------------------------
-# LLM CLIENT (UNCHANGED)
-# ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# AMD LLM CLIENT (UNCHANGED)
+# ---------------------------------------------------------------------
 
 def make_client():
     return openai.OpenAI(
@@ -86,21 +81,24 @@ def make_client():
         },
     )
 
-# ---------------------------------------------------------------------
-# TEXT CLEANING
-# ---------------------------------------------------------------------
 
+# ---------------------------------------------------------------------
+# TEXT SANITIZATION
+# ---------------------------------------------------------------------
 
 def clean_text(text: str):
-    """Sanitize LLM output for ReportLab."""
+    """Sanitize LLM output so ReportLab never crashes."""
 
     if not text:
         return ""
 
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    # remove html tags
     text = re.sub(r"<[^>]+>", "", text)
+
+    # remove markdown
     text = re.sub(r"[#*`]", "", text)
 
+    # normalize unicode punctuation
     text = text.replace("\u2014", "-")
     text = text.replace("\u2013", "-")
     text = text.replace("\u2018", "'")
@@ -108,7 +106,11 @@ def clean_text(text: str):
     text = text.replace("\u201c", '"')
     text = text.replace("\u201d", '"')
 
+    # force ascii
     text = text.encode("ascii", "replace").decode("ascii")
+
+    # escape HTML characters so ReportLab doesn't interpret them
+    text = escape(text)
 
     return text.strip()
 
@@ -117,14 +119,13 @@ def clean_text(text: str):
 # LLM CALL
 # ---------------------------------------------------------------------
 
-
 def call_llm(client, prompt, section):
 
     log.info("Generating %s", section)
 
     system = (
-        "You are an automotive market analyst specializing in "
-        "truck pricing and vehicle resale trends."
+        "You are an automotive market analyst specializing in pickup truck "
+        "pricing and resale value trends."
     )
 
     response = client.chat.completions.create(
@@ -146,7 +147,6 @@ def call_llm(client, prompt, section):
 # REPORT CONTENT
 # ---------------------------------------------------------------------
 
-
 def generate_content(client, date):
 
     sections = {}
@@ -157,26 +157,26 @@ Explain whether prices are trending up or down.
 """, "Summary")
 
     sections["history"] = call_llm(client, f"""
-Explain Ford Raptor MSRP changes from 2017 to 2025 and resale trends.
+Explain Ford Raptor MSRP changes from 2017 through 2025 and resale value trends.
 """, "Historical Prices")
 
     sections["used"] = call_llm(client, f"""
-Analyze used Ford Raptor prices across the U.S.
-Explain depreciation and dealer markups.
+Analyze used Ford Raptor prices across the United States including depreciation
+and dealer markup behavior.
 """, "Used Market")
 
     sections["regional"] = call_llm(client, f"""
-Explain regional Raptor pricing differences focusing on Texas,
-California and Midwest markets.
+Explain regional Raptor price differences focusing on Texas, California,
+and Midwest markets.
 """, "Regional Markets")
 
     sections["competition"] = call_llm(client, f"""
-Explain how competitor trucks influence Raptor prices including
-Ram TRX, Silverado ZR2, and Toyota TRD Pro.
+Explain how competitor trucks affect Raptor pricing including Ram TRX,
+Chevy Silverado ZR2 and Toyota TRD Pro.
 """, "Competition")
 
     sections["outlook"] = call_llm(client, f"""
-Give a short forecast for Ford Raptor pricing over the next 12 months.
+Provide a short 12 month outlook for Ford Raptor pricing.
 """, "Outlook")
 
     return sections
@@ -186,8 +186,7 @@ Give a short forecast for Ford Raptor pricing over the next 12 months.
 # PDF STYLES
 # ---------------------------------------------------------------------
 
-
-def build_styles():
+def styles():
 
     return {
 
@@ -225,18 +224,21 @@ def build_styles():
 
 
 # ---------------------------------------------------------------------
-# PDF BUILDER
+# PARAGRAPH SPLITTER
 # ---------------------------------------------------------------------
-
 
 def split_paragraphs(text):
 
     return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
 
+# ---------------------------------------------------------------------
+# PDF BUILDER
+# ---------------------------------------------------------------------
+
 def build_pdf(sections, output, date):
 
-    styles = build_styles()
+    s = styles()
 
     doc = SimpleDocTemplate(
         str(output),
@@ -254,44 +256,44 @@ def build_pdf(sections, output, date):
     width = letter[0] - 1.5 * inch
 
     masthead = Table([
-        [Paragraph("FORD RAPTOR", styles["title"])],
-        [Paragraph("PRICE TREND REPORT", styles["title"])],
-        [Paragraph(date, styles["footer"])]
+        [Paragraph("FORD RAPTOR", s["title"])],
+        [Paragraph("PRICE TREND REPORT", s["title"])],
+        [Paragraph(date, s["footer"])]
     ], colWidths=[width])
 
     masthead.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), FORD_BLUE),
-        ("TOPPADDING", (0, 0), (-1, -1), 16),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 16),
+        ("BACKGROUND", (0,0), (-1,-1), FORD_BLUE),
+        ("TOPPADDING",(0,0),(-1,-1),16),
+        ("BOTTOMPADDING",(0,0),(-1,-1),16)
     ]))
 
     story.append(masthead)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1,12))
 
-    section_order = [
-        ("EXECUTIVE SUMMARY", "summary"),
-        ("HISTORICAL PRICE TRENDS", "history"),
-        ("USED MARKET ANALYSIS", "used"),
-        ("REGIONAL MARKET DIFFERENCES", "regional"),
-        ("COMPETITOR IMPACT", "competition"),
-        ("PRICE OUTLOOK", "outlook"),
+    sections_order = [
+        ("EXECUTIVE SUMMARY","summary"),
+        ("HISTORICAL PRICE TRENDS","history"),
+        ("USED MARKET ANALYSIS","used"),
+        ("REGIONAL MARKET DIFFERENCES","regional"),
+        ("COMPETITOR IMPACT","competition"),
+        ("PRICE OUTLOOK","outlook")
     ]
 
-    for title, key in section_order:
+    for title,key in sections_order:
 
-        story.append(Paragraph(title, styles["section"]))
+        story.append(Paragraph(title, s["section"]))
         story.append(HRFlowable(width=width, thickness=1, color=FORD_BLUE))
 
         for p in split_paragraphs(sections[key]):
-            story.append(Paragraph(p, styles["body"]))
+            story.append(Paragraph(p, s["body"]))
 
-        story.append(Spacer(1, 12))
+        story.append(Spacer(1,12))
 
     story.append(HRFlowable(width=width, thickness=0.5, color=BORDER))
 
     story.append(Paragraph(
         f"Ford Raptor Price Report | Generated {date}",
-        styles["footer"]
+        s["footer"]
     ))
 
     doc.build(story)
@@ -300,7 +302,6 @@ def build_pdf(sections, output, date):
 # ---------------------------------------------------------------------
 # GIT PUSH
 # ---------------------------------------------------------------------
-
 
 def commit_and_push(file):
 
@@ -318,7 +319,6 @@ def commit_and_push(file):
 # ---------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------
-
 
 def main():
 
